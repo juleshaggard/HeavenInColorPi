@@ -1,0 +1,17 @@
+[Unit]
+Description=Skywatcher camera web app
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=haggy
+WorkingDirectory=/home/haggy/skywatcher
+Environment=PATH=/home/haggy/skywatcher/.venv/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-/home/haggy/skywatcher/.env
+ExecStart=/home/haggy/skywatcher/.venv/bin/python /home/haggy/skywatcher/app.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

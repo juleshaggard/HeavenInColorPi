@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+skywatcher-app.tar.gz
+.DS_Store

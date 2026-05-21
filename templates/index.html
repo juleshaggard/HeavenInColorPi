@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Skywatcher</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="hero-card surface">
+        <div class="window-chrome">
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
+
+        <div class="hero-grid">
+          <aside class="hero-copy">
+            <p class="eyebrow">Skywatcher</p>
+            <h1>Read the sky like a living calendar.</h1>
+            <p class="lede">
+              Every 30 minutes the Raspberry Pi captures the sky, extracts its dominant color, and files the moment into a visual history.
+            </p>
+
+            <div class="summary-grid">
+              <div class="summary-tile">
+                <span class="label">Current tone</span>
+                <strong id="hex-value">Loading...</strong>
+              </div>
+              <div class="summary-tile">
+                <span class="label">Captured</span>
+                <strong id="time-value">Waiting for first frame</strong>
+              </div>
+              <div class="summary-tile">
+                <span class="label">History</span>
+                <strong id="capture-count">0 captures</strong>
+              </div>
+            </div>
+          </aside>
+
+          <section class="preview-panel">
+            <div class="preview-head">
+              <div class="preview-meta">
+                <span class="label">Focused entry</span>
+                <strong id="selected-label">Latest capture</strong>
+              </div>
+              <div class="segmented-control" role="tablist" aria-label="View mode">
+                <button class="toggle active" data-view="photo" type="button">Photo</button>
+                <button class="toggle" data-view="color" type="button">Color</button>
+              </div>
+            </div>
+
+            <article class="viewer active" id="photo-view">
+              <img id="sky-image" alt="Focused sky capture" />
+            </article>
+            <article class="viewer color-view" id="color-view">
+              <div class="swatch" id="color-swatch">
+                <div class="swatch-copy">
+                  <span class="label">Average sky color</span>
+                  <strong id="swatch-hex">#000000</strong>
+                </div>
+              </div>
+            </article>
+          </section>
+        </div>
+      </section>
+
+      <section class="history-card surface">
+        <div class="history-head">
+          <div>
+            <p class="eyebrow">History</p>
+            <h2>Color archive</h2>
+            <p class="history-copy">Browse the sky as a large visual grid and zoom the timeline from one week to all recorded captures.</p>
+          </div>
+          <div class="segmented-control scale-control" role="tablist" aria-label="History range">
+            <button class="range-toggle active" data-range="week" type="button">1W</button>
+            <button class="range-toggle" data-range="month" type="button">1M</button>
+            <button class="range-toggle" data-range="quarter" type="button">3M</button>
+            <button class="range-toggle" data-range="year" type="button">1Y</button>
+            <button class="range-toggle" data-range="all" type="button">All</button>
+          </div>
+        </div>
+
+        <div class="history-stats">
+          <span id="range-title">Showing past week</span>
+          <span id="range-count">0 captures</span>
+        </div>
+
+        <section class="gallery-grid" id="gallery-grid" aria-live="polite"></section>
+        <template id="gallery-card-template">
+          <button class="gallery-card" type="button">
+            <div class="gallery-thumb-wrap">
+              <img class="gallery-thumb" alt="" />
+              <span class="gallery-swatch"></span>
+            </div>
+            <div class="gallery-meta">
+              <strong class="gallery-time"></strong>
+              <span class="gallery-date"></span>
+            </div>
+          </button>
+        </template>
+      </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+  </body>
+</html>
