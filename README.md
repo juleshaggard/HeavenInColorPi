@@ -26,7 +26,10 @@ SKY_GIT_BRANCH=main
 SKY_GIT_COMMIT=true
 SKY_PUBLISHED_CAP_MIB=900
 SKY_PRUNE_ENABLED=true
+SKY_MIN_CAPTURED_AT=2026-04-25T03:11:00Z
 ```
+
+`SKY_MIN_CAPTURED_AT` is inclusive and uses UTC. The value above keeps frames after Friday, April 24, 2026 at 08:10 PM Pacific time, removing that minute and everything before it.
 
 Run a dry check:
 

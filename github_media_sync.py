@@ -83,6 +83,24 @@ def output_dir_from_env() -> Path:
     return APP_ROOT / "public" / "sky"
 
 
+def parse_captured_at(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        if raw.endswith("Z"):
+            dt = datetime.fromisoformat(raw[:-1] + "+00:00")
+        else:
+            dt = datetime.fromisoformat(raw)
+    except ValueError:
+        dt = datetime.strptime(raw, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def load_captures(history_path: Path, capture_dir: Path) -> list[Capture]:
     if history_path.exists():
         raw_items = json.loads(history_path.read_text())
@@ -104,6 +122,12 @@ def load_captures(history_path: Path, capture_dir: Path) -> list[Capture]:
         [c for c in captures if (capture_dir / c.image_name).exists()],
         key=lambda c: c.captured_at,
     )
+
+
+def filter_captures(captures: list[Capture], min_captured_at: datetime | None) -> list[Capture]:
+    if min_captured_at is None:
+        return captures
+    return [capture for capture in captures if capture.captured_at >= min_captured_at]
 
 
 def probe_image(path: Path) -> tuple[int, int]:
@@ -290,6 +314,13 @@ def find_git_root(path: Path) -> Path | None:
     return None
 
 
+def pull_git_root(output_dir: Path, branch: str) -> None:
+    root = find_git_root(output_dir)
+    if root is None:
+        raise RuntimeError(f"No git checkout found above {output_dir}")
+    subprocess.run(["git", "pull", "--ff-only", "origin", branch], cwd=root, check=True)
+
+
 def run_git_publish(output_dir: Path, branch: str, message: str) -> None:
     root = find_git_root(output_dir)
     if root is None:
@@ -320,13 +351,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--commit", action="store_true", default=env_flag("SKY_GIT_COMMIT"))
     parser.add_argument("--branch", default=os.getenv("SKY_GIT_BRANCH", "main"))
     parser.add_argument("--message", default=os.getenv("SKY_GIT_MESSAGE", "Update sky media"))
+    parser.add_argument("--min-captured-at", default=os.getenv("SKY_MIN_CAPTURED_AT"))
     return parser.parse_args()
 
 
 def main() -> None:
     load_env_file(APP_ROOT / ".env")
     args = parse_args()
-    captures = load_captures(args.history_path, args.capture_dir)
+    min_captured_at = parse_captured_at(args.min_captured_at)
+    if args.commit and not args.dry_run:
+        pull_git_root(args.output_dir, args.branch)
+
+    source_captures = load_captures(args.history_path, args.capture_dir)
+    captures = filter_captures(source_captures, min_captured_at)
     manifest, removed_files, pruned = build_manifest(
         captures=captures,
         capture_dir=args.capture_dir,
@@ -339,6 +376,9 @@ def main() -> None:
         prune=not args.no_prune,
         dry_run=args.dry_run,
     )
+    manifest["retention"]["sourceCount"] = len(source_captures)
+    manifest["retention"]["excludedBeforeCount"] = len(source_captures) - len(captures)
+    manifest["retention"]["minCapturedAt"] = min_captured_at.isoformat().replace("+00:00", "Z") if min_captured_at else None
     manifest, manifest_unchanged = preserve_existing_manifest_if_equivalent(args.output_dir, manifest)
     write_manifest(args.output_dir, manifest, args.dry_run)
 
