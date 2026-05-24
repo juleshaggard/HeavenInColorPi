@@ -189,6 +189,26 @@ def write_manifest(output_dir: Path, manifest: dict[str, Any], dry_run: bool) ->
     tmp_path.replace(target)
 
 
+def comparable_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in manifest.items() if key != "generatedAt"}
+
+
+def preserve_existing_manifest_if_equivalent(
+    output_dir: Path,
+    manifest: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    target = output_dir / "manifest.json"
+    if not target.exists():
+        return manifest, False
+    try:
+        existing = json.loads(target.read_text())
+    except (OSError, json.JSONDecodeError):
+        return manifest, False
+    if comparable_manifest(existing) == comparable_manifest(manifest):
+        return existing, True
+    return manifest, False
+
+
 def build_manifest(
     captures: list[Capture],
     capture_dir: Path,
@@ -319,6 +339,7 @@ def main() -> None:
         prune=not args.no_prune,
         dry_run=args.dry_run,
     )
+    manifest, manifest_unchanged = preserve_existing_manifest_if_equivalent(args.output_dir, manifest)
     write_manifest(args.output_dir, manifest, args.dry_run)
 
     retention = manifest["retention"]
@@ -331,6 +352,8 @@ def main() -> None:
         print(f"oldest pruned: {pruned[-1].timestamp}; newest pruned: {pruned[0].timestamp}")
     if removed_files:
         print(f"removed stale files: {len(removed_files)}")
+    if manifest_unchanged:
+        print("manifest unchanged")
     if args.dry_run:
         print("dry run: no files written")
         return
