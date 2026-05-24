@@ -1,0 +1,11 @@
+[Unit]
+Description=Skywatcher GitHub media sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=haggy
+WorkingDirectory=/home/haggy/skywatcher
+EnvironmentFile=-/home/haggy/skywatcher/.env
+ExecStart=/home/haggy/skywatcher/.venv/bin/python /home/haggy/skywatcher/github_media_sync.py --commit
