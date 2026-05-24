@@ -19,6 +19,20 @@ DEFAULT_HISTORY_PATH = APP_ROOT / "data" / "history.json"
 DEFAULT_CAP_BYTES = 900 * 1024 * 1024
 
 
+def load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("\"'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 @dataclass(frozen=True)
 class Capture:
     timestamp: str
@@ -290,6 +304,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    load_env_file(APP_ROOT / ".env")
     args = parse_args()
     captures = load_captures(args.history_path, args.capture_dir)
     manifest, removed_files, pruned = build_manifest(
