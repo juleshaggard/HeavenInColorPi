@@ -18,6 +18,8 @@ You can use either `CLOUDINARY_URL` or the three explicit variables shown in [.e
 
 `github_media_sync.py` converts captures into tiny web images, writes `public/sky/manifest.json`, and removes the oldest retained captures before adding new ones when the published image set would exceed the configured cap. By default, hosted site images are capped at 128px wide so the project can keep running for years.
 
+The sync also builds weekly sprite sheets under `public/sky/sprites/`. Each sprite contains 64px square crops for the archive grid, so the site can render hundreds of tiny archive cells from a few weekly images instead of requesting every thumbnail individually. Individual images and thumbnails are still published as fallbacks and for detail views.
+
 Recommended settings in `/home/haggy/skywatcher/.env`:
 
 ```bash
@@ -26,6 +28,9 @@ SKY_GIT_BRANCH=main
 SKY_GIT_COMMIT=true
 SKY_PUBLISHED_CAP_MIB=900
 SKY_PRUNE_ENABLED=true
+SKY_SPRITES_ENABLED=true
+SKY_SPRITE_TILE_SIZE=64
+SKY_SPRITE_COLUMNS=16
 SKY_MIN_CAPTURED_AT=2026-04-25T03:11:00Z
 ```
 
@@ -41,4 +46,10 @@ Run and commit from the configured site checkout:
 
 ```bash
 /home/haggy/skywatcher/.venv/bin/python /home/haggy/skywatcher/github_media_sync.py --commit
+```
+
+Backfill sprite sheets for an existing site checkout without touching source captures:
+
+```bash
+/home/haggy/skywatcher/.venv/bin/python /home/haggy/skywatcher/github_media_sync.py --sprites-from-manifest --commit
 ```

@@ -17,6 +17,8 @@ APP_ROOT = Path(__file__).resolve().parent
 DEFAULT_CAPTURE_DIR = APP_ROOT / "data" / "captures"
 DEFAULT_HISTORY_PATH = APP_ROOT / "data" / "history.json"
 DEFAULT_CAP_BYTES = 900 * 1024 * 1024
+DEFAULT_SPRITE_TILE_SIZE = 64
+DEFAULT_SPRITE_COLUMNS = 16
 
 
 def load_env_file(path: Path) -> None:
@@ -188,7 +190,7 @@ def remove_empty_dirs(root: Path) -> None:
 
 def prune_unretained_files(output_dir: Path, retained_paths: set[Path], dry_run: bool) -> list[str]:
     removed: list[str] = []
-    for folder in (output_dir / "images", output_dir / "thumbs"):
+    for folder in (output_dir / "images", output_dir / "thumbs", output_dir / "sprites"):
         if not folder.exists():
             continue
         for path in folder.rglob("*.jpg"):
@@ -233,6 +235,178 @@ def preserve_existing_manifest_if_equivalent(
     return manifest, False
 
 
+def sprite_key(captured_at: datetime) -> str:
+    iso_year, iso_week, _ = captured_at.isocalendar()
+    return f"{iso_year}-W{iso_week:02d}"
+
+
+def write_sprite_sheet(
+    output_dir: Path,
+    key: str,
+    entries: list[dict[str, Any]],
+    tile_size: int,
+    columns: int,
+    quality: int,
+    dry_run: bool,
+) -> dict[str, Any]:
+    rows = (len(entries) + columns - 1) // columns
+    width = columns * tile_size
+    height = rows * tile_size
+    year = key.split("-", 1)[0]
+    rel_path = f"sprites/{year}/{key}.jpg"
+    dest = output_dir / rel_path
+
+    for index, entry in enumerate(entries):
+        entry["sprite"] = {"key": key, "index": index}
+
+    if dry_run:
+        bytes_written = dest.stat().st_size if dest.exists() else 0
+        if dest.exists():
+            width, height = probe_image(dest)
+        return {
+            "key": key,
+            "url": rel_path,
+            "tileSize": tile_size,
+            "columns": columns,
+            "rows": rows,
+            "width": width,
+            "height": height,
+            "count": len(entries),
+            "bytes": bytes_written,
+        }
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    sheet = Image.new("RGB", (width, height), (0, 0, 0))
+    for index, entry in enumerate(entries):
+        source_path = output_dir / entry["imageUrl"]
+        with Image.open(source_path) as image:
+            image = ImageOps.exif_transpose(image).convert("RGB")
+            frame = ImageOps.fit(
+                image,
+                (tile_size, tile_size),
+                method=Image.Resampling.LANCZOS,
+                centering=(0.5, 0.5),
+            )
+        col = index % columns
+        row = index // columns
+        sheet.paste(frame, (col * tile_size, row * tile_size))
+
+    with tempfile.NamedTemporaryFile(prefix=dest.name, suffix=".tmp", dir=dest.parent, delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        sheet.save(tmp_path, format="JPEG", quality=quality, optimize=True, progressive=True)
+        tmp_path.replace(dest)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+    return {
+        "key": key,
+        "url": rel_path,
+        "tileSize": tile_size,
+        "columns": columns,
+        "rows": rows,
+        "width": width,
+        "height": height,
+        "count": len(entries),
+        "bytes": dest.stat().st_size,
+    }
+
+
+def build_weekly_sprites(
+    entries: list[dict[str, Any]],
+    output_dir: Path,
+    tile_size: int,
+    columns: int,
+    quality: int,
+    dry_run: bool,
+) -> tuple[dict[str, Any], set[Path], int]:
+    for entry in entries:
+        entry.pop("sprite", None)
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for entry in entries:
+        captured_at = parse_captured_at(entry.get("capturedAt"))
+        if captured_at is None:
+            continue
+        key = sprite_key(captured_at)
+        grouped.setdefault(key, []).append(entry)
+
+    weeks: list[dict[str, Any]] = []
+    sprite_paths: set[Path] = set()
+    sprite_bytes = 0
+    for key in sorted(grouped):
+        week = write_sprite_sheet(
+            output_dir=output_dir,
+            key=key,
+            entries=grouped[key],
+            tile_size=tile_size,
+            columns=columns,
+            quality=quality,
+            dry_run=dry_run,
+        )
+        weeks.append(week)
+        sprite_paths.add(output_dir / week["url"])
+        sprite_bytes += week["bytes"]
+
+    return {
+        "tileSize": tile_size,
+        "columns": columns,
+        "weeks": weeks,
+    }, sprite_paths, sprite_bytes
+
+
+def retained_file_paths(
+    output_dir: Path,
+    entries: list[dict[str, Any]],
+    sprite_paths: set[Path],
+) -> set[Path]:
+    paths = set(sprite_paths)
+    for entry in entries:
+        paths.add(output_dir / entry["imageUrl"])
+        if entry.get("thumbUrl"):
+            paths.add(output_dir / entry["thumbUrl"])
+    return paths
+
+
+def build_manifest_from_existing_output(
+    output_dir: Path,
+    tile_size: int,
+    sprite_columns: int,
+    sprite_quality: int,
+    dry_run: bool,
+) -> tuple[dict[str, Any], list[str]]:
+    target = output_dir / "manifest.json"
+    if not target.exists():
+        raise RuntimeError(f"No manifest found at {target}")
+
+    manifest = json.loads(target.read_text())
+    if manifest.get("version") != 1 or not isinstance(manifest.get("images"), list):
+        raise RuntimeError("Existing manifest has an unsupported shape")
+
+    entries = manifest["images"]
+    sprite_manifest, sprite_paths, sprite_bytes = build_weekly_sprites(
+        entries=entries,
+        output_dir=output_dir,
+        tile_size=tile_size,
+        columns=sprite_columns,
+        quality=sprite_quality,
+        dry_run=dry_run,
+    )
+    manifest["sprites"] = sprite_manifest
+    manifest["generatedAt"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    retention = manifest.setdefault("retention", {})
+    derivative_bytes = sum(int(entry.get("bytes") or 0) + int(entry.get("thumbBytes") or 0) for entry in entries)
+    retention["derivativeBytes"] = derivative_bytes
+    retention["spriteBytes"] = sprite_bytes
+    retention["retainedBytes"] = derivative_bytes + sprite_bytes
+    retention["retainedCount"] = len(entries)
+
+    removed_files = prune_unretained_files(output_dir, retained_file_paths(output_dir, entries, sprite_paths), dry_run)
+    return manifest, removed_files
+
+
 def build_manifest(
     captures: list[Capture],
     capture_dir: Path,
@@ -242,13 +416,17 @@ def build_manifest(
     thumb_width: int,
     quality: int,
     thumb_quality: int,
+    sprite_tile_size: int,
+    sprite_columns: int,
+    sprite_quality: int,
+    sprites_enabled: bool,
     prune: bool,
     dry_run: bool,
 ) -> tuple[dict[str, Any], list[str], list[Capture]]:
     retained: list[dict[str, Any]] = []
     pruned: list[Capture] = []
-    retained_paths: set[Path] = set()
     retained_bytes = 0
+    capture_by_id = {capture.timestamp: capture for capture in captures}
 
     for capture in reversed(captures):
         source_path = capture_dir / capture.image_name
@@ -271,8 +449,6 @@ def build_manifest(
             continue
 
         retained_bytes += pair_bytes
-        retained_paths.add(output_dir / image_rel)
-        retained_paths.add(output_dir / thumb_rel)
         retained.append(
             {
                 "id": capture.timestamp,
@@ -288,13 +464,45 @@ def build_manifest(
         )
 
     retained.reverse()
-    removed_files = prune_unretained_files(output_dir, retained_paths, dry_run)
+    sprite_manifest: dict[str, Any] | None = None
+    sprite_paths: set[Path] = set()
+    sprite_bytes = 0
+    if sprites_enabled:
+        while True:
+            sprite_manifest, sprite_paths, sprite_bytes = build_weekly_sprites(
+                entries=retained,
+                output_dir=output_dir,
+                tile_size=sprite_tile_size,
+                columns=sprite_columns,
+                quality=sprite_quality,
+                dry_run=dry_run,
+            )
+            if not prune or not retained or retained_bytes + sprite_bytes <= cap_bytes:
+                break
+
+            dropped = retained.pop(0)
+            retained_bytes -= int(dropped.get("bytes") or 0) + int(dropped.get("thumbBytes") or 0)
+            dropped_capture = capture_by_id.get(dropped["id"])
+            if dropped_capture:
+                pruned.insert(0, dropped_capture)
+            if not dry_run:
+                for rel in (dropped["imageUrl"], dropped.get("thumbUrl")):
+                    if not rel:
+                        continue
+                    path = output_dir / rel
+                    if path.exists():
+                        path.unlink()
+
+    removed_files = prune_unretained_files(output_dir, retained_file_paths(output_dir, retained, sprite_paths), dry_run)
+    total_retained_bytes = retained_bytes + sprite_bytes
     manifest = {
         "version": 1,
         "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "retention": {
             "capBytes": cap_bytes,
-            "retainedBytes": retained_bytes,
+            "retainedBytes": total_retained_bytes,
+            "derivativeBytes": retained_bytes,
+            "spriteBytes": sprite_bytes,
             "retainedCount": len(retained),
             "sourceCount": len(captures),
             "prunedCount": len(pruned),
@@ -303,6 +511,8 @@ def build_manifest(
         },
         "images": retained,
     }
+    if sprite_manifest is not None:
+        manifest["sprites"] = sprite_manifest
     return manifest, removed_files, pruned
 
 
@@ -346,6 +556,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--thumb-width", type=int, default=int(os.getenv("SKY_THUMB_MAX_WIDTH", "64")))
     parser.add_argument("--quality", type=int, default=int(os.getenv("SKY_IMAGE_QUALITY", "76")))
     parser.add_argument("--thumb-quality", type=int, default=int(os.getenv("SKY_THUMB_QUALITY", "68")))
+    parser.add_argument("--sprite-tile-size", type=int, default=int(os.getenv("SKY_SPRITE_TILE_SIZE", str(DEFAULT_SPRITE_TILE_SIZE))))
+    parser.add_argument("--sprite-columns", type=int, default=int(os.getenv("SKY_SPRITE_COLUMNS", str(DEFAULT_SPRITE_COLUMNS))))
+    parser.add_argument("--sprite-quality", type=int, default=int(os.getenv("SKY_SPRITE_QUALITY", "72")))
+    parser.add_argument("--no-sprites", action="store_true", default=not env_flag("SKY_SPRITES_ENABLED", True))
+    parser.add_argument("--sprites-from-manifest", action="store_true", default=env_flag("SKY_SPRITES_FROM_MANIFEST"))
     parser.add_argument("--no-prune", action="store_true", default=not env_flag("SKY_PRUNE_ENABLED", True))
     parser.add_argument("--dry-run", action="store_true", default=env_flag("SKY_SYNC_DRY_RUN"))
     parser.add_argument("--commit", action="store_true", default=env_flag("SKY_GIT_COMMIT"))
@@ -358,9 +573,45 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     load_env_file(APP_ROOT / ".env")
     args = parse_args()
+    if args.sprite_tile_size <= 0:
+        raise RuntimeError("--sprite-tile-size must be positive")
+    if args.sprite_columns <= 0:
+        raise RuntimeError("--sprite-columns must be positive")
+
     min_captured_at = parse_captured_at(args.min_captured_at)
     if args.commit and not args.dry_run:
         pull_git_root(args.output_dir, args.branch)
+
+    if args.sprites_from_manifest:
+        manifest, removed_files = build_manifest_from_existing_output(
+            output_dir=args.output_dir,
+            tile_size=args.sprite_tile_size,
+            sprite_columns=args.sprite_columns,
+            sprite_quality=args.sprite_quality,
+            dry_run=args.dry_run,
+        )
+        manifest, manifest_unchanged = preserve_existing_manifest_if_equivalent(args.output_dir, manifest)
+        write_manifest(args.output_dir, manifest, args.dry_run)
+        retention = manifest.get("retention", {})
+        sprites = manifest.get("sprites", {})
+        print(
+            "retained={retainedCount} retained_bytes={retainedBytes} sprite_bytes={spriteBytes} sprite_weeks={weeks}".format(
+                retainedCount=retention.get("retainedCount", 0),
+                retainedBytes=retention.get("retainedBytes", 0),
+                spriteBytes=retention.get("spriteBytes", 0),
+                weeks=len(sprites.get("weeks", [])),
+            )
+        )
+        if removed_files:
+            print(f"removed stale files: {len(removed_files)}")
+        if manifest_unchanged:
+            print("manifest unchanged")
+        if args.dry_run:
+            print("dry run: no files written")
+            return
+        if args.commit:
+            run_git_publish(args.output_dir, args.branch, args.message)
+        return
 
     source_captures = load_captures(args.history_path, args.capture_dir)
     captures = filter_captures(source_captures, min_captured_at)
@@ -373,6 +624,10 @@ def main() -> None:
         thumb_width=args.thumb_width,
         quality=args.quality,
         thumb_quality=args.thumb_quality,
+        sprite_tile_size=args.sprite_tile_size,
+        sprite_columns=args.sprite_columns,
+        sprite_quality=args.sprite_quality,
+        sprites_enabled=not args.no_sprites,
         prune=not args.no_prune,
         dry_run=args.dry_run,
     )
@@ -384,7 +639,7 @@ def main() -> None:
 
     retention = manifest["retention"]
     print(
-        "retained={retainedCount} pruned={prunedCount} retained_bytes={retainedBytes} cap_bytes={capBytes}".format(
+        "retained={retainedCount} pruned={prunedCount} retained_bytes={retainedBytes} sprite_bytes={spriteBytes} cap_bytes={capBytes}".format(
             **retention
         )
     )
