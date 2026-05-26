@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageStat
 
 
 APP_ROOT = Path(__file__).resolve().parent
@@ -135,6 +135,55 @@ def filter_captures(captures: list[Capture], min_captured_at: datetime | None) -
 def probe_image(path: Path) -> tuple[int, int]:
     with Image.open(path) as image:
         return image.size
+
+
+def rgb_to_hex(rgb: list[int] | tuple[int, int, int]) -> str:
+    return "#{:02x}{:02x}{:02x}".format(*[max(0, min(255, round(channel))) for channel in rgb[:3]])
+
+
+def center_square(image: Image.Image) -> Image.Image:
+    size = min(image.width, image.height)
+    left = (image.width - size) // 2
+    top = (image.height - size) // 2
+    return image.crop((left, top, left + size, top + size))
+
+
+def luminance(rgb: tuple[int, int, int]) -> float:
+    return rgb[0] * 0.299 + rgb[1] * 0.587 + rgb[2] * 0.114
+
+
+def extract_palette(image: Image.Image, count: int = 5) -> list[str]:
+    sample_size = 64
+    sample = image.resize((sample_size, sample_size), Image.Resampling.LANCZOS)
+    quantize_method = getattr(getattr(Image, "Quantize", Image), "MEDIANCUT", getattr(Image, "MEDIANCUT", 0))
+    quantized = sample.quantize(colors=count, method=quantize_method)
+    raw_palette = quantized.getpalette() or []
+    raw_counts = quantized.getcolors(maxcolors=sample_size * sample_size) or []
+
+    colors: list[tuple[int, int, int]] = []
+    seen: set[str] = set()
+    for _, index in raw_counts:
+        start = index * 3
+        rgb = tuple(raw_palette[start : start + 3])
+        if len(rgb) != 3:
+            continue
+        hex_color = rgb_to_hex(rgb)
+        if hex_color in seen:
+            continue
+        seen.add(hex_color)
+        colors.append(rgb)
+
+    colors.sort(key=luminance)
+    return [rgb_to_hex(color) for color in colors]
+
+
+def compute_visible_crop_colors(path: Path) -> tuple[str, list[str]]:
+    with Image.open(path) as image:
+        image = ImageOps.exif_transpose(image).convert("RGB")
+        crop = center_square(image)
+        average_hex = rgb_to_hex(ImageStat.Stat(crop).mean[:3])
+        palette = extract_palette(crop)
+    return average_hex, palette
 
 
 def write_derivative(
@@ -434,6 +483,10 @@ def build_manifest(
         thumb_rel = f"thumbs/{capture.year}/{capture.month}/{capture.timestamp}.jpg"
         image_info = write_derivative(source_path, output_dir, image_rel, max_width, quality, dry_run)
         thumb_info = write_derivative(source_path, output_dir, thumb_rel, thumb_width, thumb_quality, dry_run)
+        color_source = output_dir / image_rel
+        if dry_run and not color_source.exists():
+            color_source = source_path
+        crop_average_hex, crop_palette = compute_visible_crop_colors(color_source)
         pair_bytes = image_info.bytes + thumb_info.bytes
 
         if pair_bytes > cap_bytes:
@@ -456,6 +509,8 @@ def build_manifest(
                 "imageUrl": image_info.rel_path,
                 "thumbUrl": thumb_info.rel_path,
                 "averageHex": capture.average_hex,
+                "cropAverageHex": crop_average_hex,
+                "cropPalette": crop_palette,
                 "width": image_info.width,
                 "height": image_info.height,
                 "bytes": image_info.bytes,
