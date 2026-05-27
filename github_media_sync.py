@@ -152,13 +152,69 @@ def luminance(rgb: tuple[int, int, int]) -> float:
     return rgb[0] * 0.299 + rgb[1] * 0.587 + rgb[2] * 0.114
 
 
+def color_distance_sq(a: tuple[int, int, int], b: tuple[int, int, int]) -> float:
+    return sum((a[index] - b[index]) ** 2 for index in range(3))
+
+
+def average_rgb(colors: list[tuple[int, int, int]]) -> tuple[int, int, int] | None:
+    if not colors:
+        return None
+    return tuple(round(sum(color[index] for color in colors) / len(colors)) for index in range(3))
+
+
+def unique_colors(colors: list[tuple[int, int, int]], min_distance: int = 18) -> list[tuple[int, int, int]]:
+    selected: list[tuple[int, int, int]] = []
+    threshold = min_distance * min_distance
+    for color in colors:
+        if all(color_distance_sq(color, existing) >= threshold for existing in selected):
+            selected.append(color)
+    return selected
+
+
+def pick_evenly_by_luminance(colors: list[tuple[int, int, int]], count: int) -> list[tuple[int, int, int]]:
+    if count <= 0:
+        return []
+    ordered = sorted(colors, key=luminance)
+    if len(ordered) <= count:
+        return ordered
+    if count == 1:
+        return [ordered[len(ordered) // 2]]
+    return [ordered[round(index * (len(ordered) - 1) / (count - 1))] for index in range(count)]
+
+
+def highlight_colors(pixels: list[tuple[int, int, int]]) -> list[tuple[int, int, int]]:
+    if not pixels:
+        return []
+
+    highlights: list[tuple[int, int, int]] = []
+    bright_count = max(12, len(pixels) // 64)
+    brightest = sorted(pixels, key=luminance, reverse=True)[:bright_count]
+    bright_average = average_rgb(brightest)
+    if bright_average and luminance(bright_average) >= 210:
+        highlights.append(bright_average)
+
+    warm_pixels = [
+        pixel
+        for pixel in pixels
+        if luminance(pixel) >= 155 and pixel[0] >= pixel[2] + 8 and pixel[1] >= pixel[2] + 4
+    ]
+    if warm_pixels:
+        warm_pixels.sort(key=lambda pixel: ((pixel[0] + pixel[1]) * 0.5 - pixel[2] + luminance(pixel) * 0.15), reverse=True)
+        warm_average = average_rgb(warm_pixels[: max(12, len(pixels) // 80)])
+        if warm_average and luminance(warm_average) >= 160:
+            highlights.append(warm_average)
+
+    return unique_colors(highlights, min_distance=20)
+
+
 def extract_palette(image: Image.Image, count: int = 5) -> list[str]:
     sample_size = 64
     sample = image.resize((sample_size, sample_size), Image.Resampling.LANCZOS)
     quantize_method = getattr(getattr(Image, "Quantize", Image), "MEDIANCUT", getattr(Image, "MEDIANCUT", 0))
-    quantized = sample.quantize(colors=count, method=quantize_method)
+    quantized = sample.quantize(colors=count + 2, method=quantize_method)
     raw_palette = quantized.getpalette() or []
     raw_counts = quantized.getcolors(maxcolors=sample_size * sample_size) or []
+    pixels = list(sample.getdata())
 
     colors: list[tuple[int, int, int]] = []
     seen: set[str] = set()
@@ -173,8 +229,18 @@ def extract_palette(image: Image.Image, count: int = 5) -> list[str]:
         seen.add(hex_color)
         colors.append(rgb)
 
-    colors.sort(key=luminance)
-    return [rgb_to_hex(color) for color in colors]
+    specials = highlight_colors(pixels)
+    base = [
+        color
+        for color in unique_colors(sorted(colors, key=luminance), min_distance=14)
+        if all(color_distance_sq(color, special) >= 16 * 16 for special in specials)
+    ]
+    selected = pick_evenly_by_luminance(base, count - len(specials)) + specials
+    if len(selected) < count:
+        selected = unique_colors(selected + sorted(colors, key=luminance), min_distance=12)
+
+    selected = pick_evenly_by_luminance(unique_colors(selected, min_distance=12), count)
+    return [rgb_to_hex(color) for color in sorted(selected[:count], key=luminance)]
 
 
 def compute_visible_crop_colors(path: Path) -> tuple[str, list[str]]:
