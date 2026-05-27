@@ -31,10 +31,13 @@ SKY_PRUNE_ENABLED=true
 SKY_SPRITES_ENABLED=true
 SKY_SPRITE_TILE_SIZE=64
 SKY_SPRITE_COLUMNS=16
+SKY_SYNC_AFTER_CAPTURE=true
 SKY_MIN_CAPTURED_AT=2026-04-25T03:11:00Z
 ```
 
 `SKY_MIN_CAPTURED_AT` is inclusive and uses UTC. The value above keeps frames after Friday, April 24, 2026 at 08:10 PM Pacific time, removing that minute and everything before it.
+
+When `SKY_SYNC_AFTER_CAPTURE` is enabled, each successful camera capture runs the GitHub media sync immediately, so the manifest and weekly sprite sheet for that capture are updated in the same flow. The hourly timer still acts as a fallback and uses the same lock file, so it will skip instead of overlapping an in-progress capture-triggered sync.
 
 Run a dry check:
 

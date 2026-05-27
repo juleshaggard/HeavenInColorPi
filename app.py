@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 import subprocess
+import sys
 import threading
+import fcntl
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -31,6 +34,8 @@ RANGE_WINDOWS = {
     "year": timedelta(days=365),
     "all": None,
 }
+MEDIA_SYNC_LOCK_PATH = Path(os.getenv("SKY_MEDIA_SYNC_LOCK", "/tmp/skywatcher-media-sync.lock"))
+MEDIA_SYNC_TIMEOUT_SECONDS = int(os.getenv("SKY_MEDIA_SYNC_TIMEOUT_SECONDS", "600"))
 
 
 logging.basicConfig(
@@ -63,6 +68,64 @@ def configure_cloudinary() -> bool:
 
     logger.info("Cloudinary uploads disabled because no credentials were found")
     return False
+
+
+def env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def media_sync_enabled() -> bool:
+    default_enabled = bool(os.getenv("SKY_MEDIA_ROOT") or os.getenv("SKY_OUTPUT_DIR"))
+    return env_flag("SKY_SYNC_AFTER_CAPTURE", default_enabled) and (APP_ROOT / "github_media_sync.py").exists()
+
+
+def media_sync_command() -> list[str]:
+    if os.getenv("SKY_MEDIA_SYNC_COMMAND"):
+        return shlex.split(os.environ["SKY_MEDIA_SYNC_COMMAND"])
+    return [sys.executable, str(APP_ROOT / "github_media_sync.py")]
+
+
+def run_media_sync(reason: str) -> None:
+    if not media_sync_enabled():
+        return
+
+    MEDIA_SYNC_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with MEDIA_SYNC_LOCK_PATH.open("w") as lock_file:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            logger.info("GitHub media sync already running; skipping %s sync", reason)
+            return
+
+        command = media_sync_command()
+        logger.info("Running GitHub media sync after %s", reason)
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=MEDIA_SYNC_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            logger.exception("GitHub media sync timed out after %s seconds", MEDIA_SYNC_TIMEOUT_SECONDS)
+            return
+        except Exception:
+            logger.exception("GitHub media sync failed to start")
+            return
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+    for line in completed.stdout.splitlines():
+        logger.info("media sync: %s", line)
+    for line in completed.stderr.splitlines():
+        logger.warning("media sync: %s", line)
+    if completed.returncode != 0:
+        logger.error("GitHub media sync failed with exit code %s", completed.returncode)
 
 
 @dataclass
@@ -281,6 +344,7 @@ def perform_capture() -> CaptureState:
     history = upsert_history_item(state)
     prune_cloudinary_history(history)
     logger.info("Saved capture %s with average color %s", image_name, average_hex)
+    run_media_sync("capture")
     return state
 
 

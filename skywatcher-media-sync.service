@@ -7,4 +7,4 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=/home/haggy/skywatcher
 EnvironmentFile=-/home/haggy/skywatcher/.env
-ExecStart=/home/haggy/skywatcher/.venv/bin/python /home/haggy/skywatcher/github_media_sync.py --commit
+ExecStart=/usr/bin/flock -n /tmp/skywatcher-media-sync.lock /home/haggy/skywatcher/.venv/bin/python /home/haggy/skywatcher/github_media_sync.py --commit
